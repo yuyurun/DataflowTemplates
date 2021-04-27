@@ -70,40 +70,47 @@ public class JdbcToBigQuery {
      * Steps: 1) Read records via JDBC and convert to TableRow via RowMapper
      *        2) Append TableRow to BigQuery via BigQueryIO
      */
-    pipeline
-        /*
-         * Step 1: Read records via JDBC and convert to TableRow
-         *         via {@link org.apache.beam.sdk.io.jdbc.JdbcIO.RowMapper}
-         */
-        .apply(
-            "Read from JdbcIO",
-            DynamicJdbcIO.<TableRow>read()
-                .withDataSourceConfiguration(
-                    DynamicJdbcIO.DynamicDataSourceConfiguration.create(
-                            options.getDriverClassName(),
-                            maybeDecrypt(options.getConnectionURL(), options.getKMSEncryptionKey()))
-                        .withUsername(
-                            maybeDecrypt(options.getUsername(), options.getKMSEncryptionKey()))
-                        .withPassword(
-                            maybeDecrypt(options.getPassword(), options.getKMSEncryptionKey()))
-                        .withDriverJars(options.getDriverJars())
-                        .withConnectionProperties(options.getConnectionProperties()))
-                .withQuery(options.getQuery())
-                .withCoder(TableRowJsonCoder.of())
-                .withRowMapper(JdbcConverters.getResultSetToTableRow()))
-        /*
-         * Step 2: Append TableRow to an existing BigQuery table
-         */
-        .apply(
-            "Write to BigQuery",
-            BigQueryIO.writeTableRows()
-                .withoutValidation()
-                .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_NEVER)
-                .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_APPEND)
-                .withCustomGcsTempLocation(options.getBigQueryLoadingTemporaryDirectory())
-                .to(options.getOutputTable()));
+
+    
+    ObjectMapper mapper = new ObjectMapper(new YAMLFactory());
+    mapper.setPropertyNamingStrategy(PropertyNamingStrategy.SNAKE_CASE);
+
+    List<BigQuerySchema> bigQuerySchemas = mapper.readValue(
+            new File(Resources.getResource("schema/bigquery/app_schema.yaml").getPath()),
+            new TypeReference<List<BigQuerySchema>>(){}
+    );
+
+    bigQuerySchemas.stream().forEach(schema -> {
+      pipeline
+              .apply(
+                      "Read '" +  schema.getQuery() + "' from JdbcIO",
+                      DynamicJdbcIO.<TableRow>read()
+                              .withDataSourceConfiguration(
+                                      DynamicJdbcIO.DynamicDataSourceConfiguration.create(
+                                              ValueProvider.StaticValueProvider.of("org.postgresql.Driver"),
+                                              options.getConnectionURL())
+                                              .withUsername(options.getUsername())
+                                              .withPassword(options.getPassword())
+                                              .withConnectionProperties(options.getConnectionProperties()))
+                              .withQuery(ValueProvider.StaticValueProvider.of(schema.getQuery()))
+                              .withCoder(TableRowJsonCoder.of())
+                              .withRowMapper(JdbcConverters.getResultSetToTableRow()))
+              .apply(
+                      "Write to BigQuery: " + schema.getOutputTableName(),
+                      BigQueryIO.writeTableRows()
+                              .withoutValidation()
+                              .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED) // テーブルがなければ作成する
+                              .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE) // 既存のテーブルを消して書き込む
+                              .withSchema(schema.getTableSchema())
+                              .ignoreUnknownValues()
+                              .withCustomGcsTempLocation(options.getBigQueryLoadingTemporaryDirectory())
+                              .to(new CustomTableValueProvider(schema.getOutputTableName(), options.getOutputDataset())));
+    });
 
     // Execute the pipeline and return the result.
     return pipeline.run();
+
+
+  
   }
 }

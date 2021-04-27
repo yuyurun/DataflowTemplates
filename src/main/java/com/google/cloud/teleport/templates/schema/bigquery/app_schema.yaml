@@ -1,0 +1,12 @@
+- query: "SELECT tweets.id, reaction_type, text FROM reactions,tweets WHERE reactions.tweet_id = tweets.id;"
+  output_table_name: tweetreactions
+  fields:
+    - name: id
+      type: INT64
+      mode: REQUIRED
+    - name: reaction_type
+      type: INT64
+      mode: REQUIRED
+    - name: text
+      type: STRING
+      mode: REQUIRED
